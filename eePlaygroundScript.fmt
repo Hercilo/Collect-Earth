@@ -1,0 +1,177 @@
+// Script automatically produced by Collect Earth for the plot that has been clicked on Google Earht. See bottom of the script for more info on customization.
+// This script will show graphs of NDVI, EVI and NDWI mean-values for the pixels contained within the plot.
+
+
+// The date that is used as the start of the chart ( if the dataset is available )
+// You can change the start date manually and hit the button "Run""again to reload the charts using the different time series
+var startTime = '2000-01-01';
+
+// The last date for which the chart is generated. Should be today's date
+var endTime = '${todayDate}';
+
+// NO TOCAR DESDE AQUI ------
+// x The polygon that describes the plot.
+var plot = ee.Geometry.Polygon([
+// The placemark variable has an array called shape that contains the locations of the corners of the polygon
+<#list placemark.shape as coord>[${coord.longitude}, ${coord.latitude}],</#list>]);
+
+
+// Use a DateSlider to create monthly composites of this collection.
+var collection = ee.ImageCollection("COPERNICUS/S2").sort('CLOUDY_PIXEL_PERCENTAGE', true).filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', 30)).filterBounds(plot);
+
+// Use the start of the collection and now to bound the slider.
+var start = collection.first().date().get('year').format();
+var now = Date.now();
+var end = ee.Date(now).format();
+
+// Run this function on a change of the dateSlider.
+var showMosaic = function(range) {
+  var mosaic = collection.filterDate(range.start(), range.end()).reduce(ee.Reducer.percentile([35]))
+                      .rename(collection.first().bandNames());
+  // Asynchronously compute the name of the composite.  Display it.
+  range.start().get('year').evaluate(function(name) {
+    var visParams = {bands: ['B8', 'B4', 'B3'], min: 0, max: 3500};
+    var layer = ui.Map.Layer(mosaic, visParams, name + ' Sentinel-2A');
+    Map.layers().set(0, layer);
+  });
+};
+
+// Asynchronously compute the date range and show the slider.
+var dateRange = ee.DateRange(start, end).evaluate(function(range) {
+  var dateSlider = ui.DateSlider({
+    start: range['dates'][0],
+    end: range['dates'][1],
+    value: null,
+    period: 30,
+    onChange: showMosaic
+  });
+  Map.add(dateSlider.setValue(now));
+});
+
+// HASTA AQUI ---------------
+var sentinel_dry = ee.ImageCollection('COPERNICUS/S2').
+ filterDate(start, end).
+ filterBounds(plot).
+ sort('CLOUDY_PIXEL_PERCENTAGE', true).
+ first();
+var sentinel_dry = ee.Image(sentinel_dry);
+
+// Load the MODIS  Vegetation Index composite. Select the NDVI band. Resolution of the pixels is 250 meters.
+var modisNoaa = ee.ImageCollection('MODIS/006/MOD13Q1').filterDate(startTime, endTime).select('NDVI', "SummaryQA", 'EVI');
+
+// This function mask clouds (no masking for marginal or snow pixels)
+var maskClouds = function(image) {
+  var quality = image.select('SummaryQA');
+  var mask = quality.eq(3).not();
+  return image.updateMask(mask);
+};
+
+
+var createTimeBand = function(image) {
+  // Scale milliseconds by a large constant to avoid very small slopes
+  // in the linear regression output.
+  var timeStart = image.get('system:time_start');
+  image = image.addBands(image.metadata('system:time_start').divide(1e18));
+  
+  var dateImage = ee.Algorithms.Date( timeStart );
+  var year = dateImage.get('year');
+  var imageYear = ee.Image(year).rename(['year']).cast(['year', 'uint16']);
+  return image.addBands( imageYear );
+};
+
+  var unmasknpp = function(image) {
+  var mask = ee.Image(0);
+  return image.unmask(mask);
+};
+
+
+// Remove clouds, add variables and filter to the area of interest.
+var filteredMODIS = modisNoaa
+  // .filterBounds(roi) // This does nothing.
+  .map(maskClouds)
+  .select('NDVI');
+  
+
+print('Plot Charts:');
+
+//---------------- CHARTS ------------------------------------------------
+var modisNoaaTimeSeries = Chart.image.series(modisNoaa.select('NDVI'), plot, ee.Reducer.mean(), 30);
+modisNoaaTimeSeries = modisNoaaTimeSeries
+.setOptions({  
+		title: 'NDVI MODIS 16-Day 250m',
+		
+		hAxis: {title: 'Date',gridlines: {count: 10,}},
+		vAxis: {title: 'NDVI(*10000)',viewWindowMode: 'explicit', viewWindow: {max: 10000,min: -2500,},gridlines: {count: 5,}}
+	});
+// Show the MODIS NDVI chart on the console
+print(modisNoaaTimeSeries);
+
+
+var landsat7MonthlyNdvi = ee.ImageCollection('LANDSAT/LE7_L1T_32DAY_NDVI').filterDate(startTime, endTime).select('NDVI');
+
+var landsat7MonthlyTimeSeries = Chart.image.series(landsat7MonthlyNdvi, plot, ee.Reducer.mean(), 30);
+
+landsat7MonthlyTimeSeries = landsat7MonthlyTimeSeries
+	.setOptions({
+		title: 'NDVI Landsat 7 32-Day 30m',
+		hAxis: {title: 'Month'},
+		vAxis: {title: 'NDVI',viewWindowMode: 'explicit', viewWindow: {max: 1,min: -0.25,},gridlines: {count: 5,}}
+	});
+
+print(landsat7MonthlyTimeSeries);
+
+// Load the Landsat 8 - 32 Day Normalized Difference Vegetation Index composite. This is only available from 2013 onwards. Select the NDVI band. Resolution of the pixels is 30 meters.
+var landsat8Ndvi32Day = ee.ImageCollection('LANDSAT/LC8_L1T_32DAY_NDVI').filterDate(startTime, endTime).select('NDVI');
+
+// Generate the chart of the NDVI values through the time series. Use the mean of the NDVI value of the pixels that fall within the plot.
+var ndviTimeSeries = Chart.image.series(landsat8Ndvi32Day, plot, ee.Reducer.mean(), 30);
+
+ndviTimeSeries = ndviTimeSeries
+.setOptions({
+		title: 'NDVI Landsat 8 32-Day 30m', 
+		
+		hAxis: {title: 'Date' },
+		vAxis: { title: 'NDVI',viewWindowMode: 'explicit',viewWindow: {max: 1,min: -0.25,},gridlines: {count: 5,}}
+	});
+
+// Show the NDVI chart on the console
+print(ndviTimeSeries);
+
+
+var npp_collection = ee.ImageCollection('MODIS/055/MOD17A3').map(createTimeBand)
+.map(unmasknpp)
+;
+
+var nppChart = ui.Chart.image.series(npp_collection.select('Npp'), plot
+    )
+    .setChartType('ScatterChart')
+    .setOptions({
+      title: 'NPP Trend - MODIS Annual 1Km',
+      hAxis: {title: 'Date',  gridlines: {count: 10,}},
+      vAxis: {title: 'NPP (kg*C/m2)',viewWindowMode: 'explicit', viewWindow: {max: 20000,min: 0,}, gridlines: {count: 5,}},
+      lineWidth: 1,
+      pointSize: 2,
+      trendlines: { 0: {type:'linear', lineWidth: 1, color:'008000', visibleInLegend: true} }    // Draw a trendline for data series 0.
+    });
+print(nppChart);
+
+var modisNoaaTimeSeries_trend = Chart.image.series(filteredMODIS.select('NDVI'), plot, ee.Reducer.mean(), 30);
+modisNoaaTimeSeries_trend = modisNoaaTimeSeries_trend
+.setOptions({  
+		title: 'NDVI Trend - MODIS 16-Day 250m',
+		hAxis: {title: 'Date',gridlines: {count: 10,}},
+		vAxis: {title: 'NDVI',viewWindowMode: 'explicit', viewWindow: {max: 10000,min: -2500,},gridlines: {count: 5,}},
+    lineWidth: 0,
+    pointSize: 2,
+    trendlines: { 0: {type:'linear', lineWidth:1, pointSize: 0, color:'008000', visibleInLegend: true} }
+  });
+// Show the MODIS NDVI chart on the console
+print(modisNoaaTimeSeries_trend);
+
+print('--------------------- Imagery Information --------------------- ');
+print('Sentinel 2 Dry - Date:', sentinel_dry.date());
+Map.addLayer(sentinel_dry,{bands:['B4','B3','B2'], min:600,max:[4000, 4000, 5000], gamma:1.5}, '2017 Dry Season [RGB]',false);
+
+
+Map.centerObject(plot,16);
+Map.addLayer(plot, 0, "Plot");
